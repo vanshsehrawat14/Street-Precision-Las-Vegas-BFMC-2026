@@ -1,1 +1,15 @@
+SYSTEM ARCHITECTURE - TEAM STREET PRECISION
 
+1. SENSING LAYER: 
+   - Raspberry Pi Camera (CSI Connection): Captures 720p video feed for lane detection.
+
+2. PROCESSING LAYER (High-Level):
+   - Raspberry Pi 4 (8GB): Runs the main Python environment, handles image processing, 
+     and hosts the Web Dashboard.
+
+3. CONTROL LAYER (Low-Level):
+   - STM32 Nucleo Board: Receives serial commands from the Pi to control 
+     the Steering Servo and DC Motor (Velocity).
+
+4. CONNECTIVITY:
+   - Wi-Fi (SSH/TCP): Connects the car to the PC for manual control and monitoring.
