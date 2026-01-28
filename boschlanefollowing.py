@@ -7,8 +7,8 @@ from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
-CAM_TOPIC   = "/automobile/camera1/image_raw"
-CMD_TOPIC   = "/automobile/command"
+CAM_TOPIC = "/automobile/camera1/image_raw"
+CMD_TOPIC = "/automobile/command"
 DEBUG_TOPIC = "/lane_follow/debug_image"
 
 
@@ -19,10 +19,10 @@ class LaneFollowerBFMC:
         self.pub_dbg = rospy.Publisher(DEBUG_TOPIC, Image, queue_size=1)
         self.sub = rospy.Subscriber(CAM_TOPIC, Image, self.cb, queue_size=1)
 
-        # -------- Controls (strong defaults for curves) --------
-        self.hz        = rospy.get_param("~hz", 20)
-        self.v_max     = rospy.get_param("~v_max", 0.16)
-        self.v_min     = rospy.get_param("~v_min", 0.08)
+        # Controls (strong defaults for curves)
+        self.hz = rospy.get_param("~hz", 20)
+        self.v_max = rospy.get_param("~v_max", 0.16)
+        self.v_min = rospy.get_param("~v_min", 0.08)
 
         self.max_steer = rospy.get_param("~max_steer", 0.95)
         self.min_steer = rospy.get_param("~min_steer", 0.18)
@@ -31,23 +31,23 @@ class LaneFollowerBFMC:
         self.k_heading = rospy.get_param("~k_heading", 2.6)
 
         self.steer_smooth = rospy.get_param("~steer_smooth", 0.25)
-        self.deadband     = rospy.get_param("~deadband", 0.01)
+        self.deadband = rospy.get_param("~deadband", 0.01)
 
         self.invert_steer = rospy.get_param("~invert_steer", False)
-        self.steer_key    = rospy.get_param("~steer_key", "steerAngle")  # try "steer" if needed
+        self.steer_key = rospy.get_param("~steer_key", "steerAngle")  
 
-        # -------- Vision (white-only) --------
-        self.roi_start    = rospy.get_param("~roi_start", 0.55)   # start ROI higher to "see" curve earlier
-        self.thresh       = rospy.get_param("~thresh", 200)       # grayscale threshold for white
-        self.morph_k      = rospy.get_param("~morph_k", 5)
+        # Vision (white-only) 
+        self.roi_start = rospy.get_param("~roi_start", 0.55) # start ROI higher to "see" curve earlier
+        self.thresh = rospy.get_param("~thresh", 200) # grayscale threshold for white
+        self.morph_k = rospy.get_param("~morph_k", 5)
 
         # sliding window params
-        self.nwindows     = rospy.get_param("~nwindows", 9)
-        self.margin       = rospy.get_param("~margin", 90)
-        self.minpix       = rospy.get_param("~minpix", 60)
+        self.nwindows = rospy.get_param("~nwindows", 9)
+        self.margin = rospy.get_param("~margin", 90)
+        self.minpix  = rospy.get_param("~minpix", 60)
 
         # lookahead for control (0..1 of ROI height; smaller = higher up)
-        self.look_y       = rospy.get_param("~look_y", 0.45)   # look further ahead for curves
+        self.look_y       = rospy.get_param("~look_y", 0.45) # look further ahead for curves
         self.near_y       = rospy.get_param("~near_y", 0.85)
 
         # lane lost behavior
@@ -148,14 +148,14 @@ class LaneFollowerBFMC:
         if left_lane_inds.size > 200:
             leftx = nonzerox[left_lane_inds]
             lefty = nonzeroy[left_lane_inds]
-            left_fit = np.polyfit(lefty, leftx, 2)  # x = a*y^2 + b*y + c
-            out[lefty, leftx] = (255, 0, 0)  # left pixels blue
+            left_fit = np.polyfit(lefty, leftx, 2) # x = a*y^2 + b*y + c
+            out[lefty, leftx] = (255, 0, 0) # left pixels blue
 
         if right_lane_inds.size > 200:
             rightx = nonzerox[right_lane_inds]
             righty = nonzeroy[right_lane_inds]
             right_fit = np.polyfit(righty, rightx, 2)
-            out[righty, rightx] = (0, 0, 255)  # right pixels red
+            out[righty, rightx] = (0, 0, 255) # right pixels red
 
         return left_fit, right_fit, out
 
@@ -217,7 +217,7 @@ class LaneFollowerBFMC:
 
         # Heading error from centerline segment
         dx = (c_far - c_near)
-        dy = (y_far - y_near)  # typically negative
+        dy = (y_far - y_near) # typically negative
         heading_err = float(np.arctan2(dx, -dy + 1e-6))
 
         # draw fits + centers
@@ -298,4 +298,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
