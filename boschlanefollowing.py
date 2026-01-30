@@ -19,10 +19,11 @@ class LaneFollowerBFMC:
         self.pub_dbg = rospy.Publisher(DEBUG_TOPIC, Image, queue_size=1)
         self.sub = rospy.Subscriber(CAM_TOPIC, Image, self.cb, queue_size=1)
 
-        # Controls (strong defaults for curves)
+        # Controls (updated for BFMC speed requirements)
         self.hz = rospy.get_param("~hz", 20)
-        self.v_max = rospy.get_param("~v_max", 0.16)
-        self.v_min = rospy.get_param("~v_min", 0.08)
+        self.v_max = rospy.get_param("~v_max", 0.28)  # 28 cm/s city (above 20 cm/s min)
+        self.v_min = rospy.get_param("~v_min", 0.15)  # 15 cm/s for tight curves
+        self.v_highway = rospy.get_param("~v_highway", 0.45)  # 45 cm/s highway (above 40 cm/s min)
 
         self.max_steer = rospy.get_param("~max_steer", 0.95)
         self.min_steer = rospy.get_param("~min_steer", 0.18)
@@ -54,6 +55,9 @@ class LaneFollowerBFMC:
         self.lost_limit   = rospy.get_param("~lost_limit", 12)
         self.stop_on_lost = rospy.get_param("~stop_on_lost", True)
 
+        # State tracking for future state machine integration
+        self.is_highway = rospy.get_param("~is_highway", False)  # TODO: detect from signs
+
         self.frame = None
         self.last_steer = 0.0
         self.lost_count = 0
@@ -61,6 +65,7 @@ class LaneFollowerBFMC:
         rospy.Timer(rospy.Duration(1.0 / self.hz), self.loop)
 
         rospy.loginfo(f"[lane_follow_bfmc] ready | steer_key={self.steer_key}")
+        rospy.loginfo(f"[lane_follow_bfmc] Speed: city={self.v_max}m/s, highway={self.v_highway}m/s")
 
     def cb(self, msg):
         try:
@@ -266,10 +271,14 @@ class LaneFollowerBFMC:
         if abs(cte) < self.deadband:
             cte = 0.0
 
-        # Slow down a lot in turns so it can commit to the curve
+        # Determine base speed (highway vs city)
+        # TODO: Integrate with state machine to detect highway signs
+        base_speed = self.v_highway if self.is_highway else self.v_max
+
+        # Slow down in turns so it can commit to the curve
         turn_mag = min(1.0, abs(head)/0.40 + abs(cte)/0.45)
-        v = self.v_max - turn_mag*(self.v_max - self.v_min)
-        v = float(self.clamp(v, self.v_min, self.v_max))
+        v = base_speed - turn_mag*(base_speed - self.v_min)
+        v = float(self.clamp(v, self.v_min, base_speed))
 
         # Stanley-like steering
         steer = (self.k_heading * head) + np.arctan2(self.k_stanley * cte, (v + 1e-3))
@@ -298,5 +307,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
