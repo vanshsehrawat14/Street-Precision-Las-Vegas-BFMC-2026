@@ -24,14 +24,19 @@ class LaneFollowerBFMC:
         self.v_max     = rospy.get_param("~v_max", 0.16)
         self.v_min     = rospy.get_param("~v_min", 0.08)
 
-        self.max_steer = rospy.get_param("~max_steer", 0.95)
-        self.min_steer = rospy.get_param("~min_steer", 0.18)
+        self.max_steer = rospy.get_param("~max_steer", 10.0)
+        self.min_steer = rospy.get_param("~min_steer", 7.22)
 
-        self.k_stanley = rospy.get_param("~k_stanley", 5.0)
-        self.k_heading = rospy.get_param("~k_heading", 2.6)
+        self.k_stanley = rospy.get_param("~k_stanley", 7.5)
+        self.k_heading = rospy.get_param("~k_heading", 3.8)
 
-        self.steer_smooth = rospy.get_param("~steer_smooth", 0.25)
+        self.steer_smooth = rospy.get_param("~steer_smooth", 0.20)
         self.deadband     = rospy.get_param("~deadband", 0.01)
+
+        # Boost steering on sharp turns / when drifting (get back on track faster)
+        self.turn_boost_gain       = rospy.get_param("~turn_boost_gain", 10.65)   # multiply steer when past threshold
+        self.turn_boost_cte_thr   = rospy.get_param("~turn_boost_cte_thr", 0.07)  # |cte| above this -> boost (lower = boost sooner)
+        self.turn_boost_heading_thr = rospy.get_param("~turn_boost_heading_thr", 0.15)  # |heading| above this -> boost
 
         self.invert_steer = rospy.get_param("~invert_steer", False)
         self.steer_key    = rospy.get_param("~steer_key", "steerAngle")  # try "steer" if needed
@@ -71,7 +76,7 @@ class LaneFollowerBFMC:
         self.obs_resume_clear_frames = rospy.get_param("~obs_resume_clear_frames", 5)
 
         # Throttle obstacle detection (set to 1 for fastest reaction)
-        self.obs_every_n_frames = rospy.get_param("~obs_every_n_frames", 1)
+        self.obs_every_n_frames = rospy.get_param("~obs_every_n_frames", 2)
 
         # -------- Avoidance (lane offset + steering push) --------
         self.avoid_enable        = rospy.get_param("~avoid_enable", True)
@@ -498,12 +503,11 @@ class LaneFollowerBFMC:
         # -------- Lane following (with avoid_norm bias) --------
         cte, head, dbg = self.estimate_center_and_heading(self.frame, avoid_norm=avoid_norm)
 
-        if obs_dbg_for_pub is not None:
-            dbg = obs_dbg_for_pub
-
+        # Always use lane view for debug (avoids flicker from alternating lane/obstacle image)
         if dbg is not None:
             cv2.putText(dbg, f"avoid_norm={avoid_norm:+.2f} dir={self._avoid_dir:+.0f} until={(self._avoid_until - rospy.Time.now()).to_sec():+.2f}s",
                         (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+            cv2.putText(dbg, self.obs_last_status, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
         try:
             self.pub_dbg.publish(self.bridge.cv2_to_imgmsg(dbg, encoding="bgr8"))
@@ -536,6 +540,10 @@ class LaneFollowerBFMC:
         steer = (self.k_heading * head) + np.arctan2(self.k_stanley * cte, (v + 1e-3))
         steer += float(self.avoid_steer_bias) * float(avoid_norm)
 
+        # On sharp turns or when drifting, boost steering to recover sooner
+        if abs(cte) >= float(self.turn_boost_cte_thr) or abs(head) >= float(self.turn_boost_heading_thr):
+            steer *= float(self.turn_boost_gain)
+
         if self.invert_steer:
             steer *= -1.0
 
@@ -558,4 +566,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
