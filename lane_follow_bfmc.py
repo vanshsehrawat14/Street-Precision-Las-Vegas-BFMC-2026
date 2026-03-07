@@ -6,6 +6,9 @@ import rospy
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
+import os
+import base64
+import requests
 
 CAM_TOPIC   = "/automobile/camera1/image_raw"
 CMD_TOPIC   = "/automobile/command"
@@ -111,6 +114,15 @@ class LaneFollowerBFMC:
         self.state = "DRIVE"  # DRIVE or HALT
         self.halt_reason = ""
         self._halt_clear_count = 0  # consecutive frames with no stop-condition obstacle
+
+        # --- YOLO detection config ---
+        self._yolo_api_key = os.environ.get("ROBOFLOW_API_KEY", "")
+        self._yolo_url = "https://detect.roboflow.com/bfmc-6btkg/3"
+        self._yolo_every_n = 6
+        self._yolo_frame_count = 0
+        self._yolo_action = "NORMAL"
+        self._stop_sign_resume_time = rospy.Time(0)
+        self._crosswalk_active = False
 
         rospy.Timer(rospy.Duration(1.0 / self.hz), self.loop)
         rospy.loginfo(
@@ -293,8 +305,39 @@ class LaneFollowerBFMC:
         dbg_full = self.make_debug_full(bgr, y0, overlay)
         cv2.putText(dbg_full, f"cte={cte:+.3f} head={heading_err:+.3f} avoid={avoid_norm:+.2f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0,255,255), 2)
+        cv2.putText(dbg_full, f"YOLO: {self._yolo_action}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
 
         return cte, heading_err, dbg_full
+
+    def _yolo_detect(self, bgr):
+        try:
+            _, buf = cv2.imencode(".jpg", bgr)
+            b64 = base64.b64encode(buf).decode("utf-8")
+            r = requests.post(
+                self._yolo_url,
+                params={"api_key": self._yolo_api_key, "confidence": 45},
+                data=b64,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=3,
+            )
+            preds = r.json().get("predictions", [])
+            classes = {p["class"] for p in preds}
+
+            # Stop sign: halt for 3 seconds then continue
+            if "stop_sign" in classes and rospy.Time.now() > self._stop_sign_resume_time:
+                self._stop_sign_resume_time = rospy.Time.now() + rospy.Duration(3.0)
+                return "STOP"
+            if rospy.Time.now() < self._stop_sign_resume_time:
+                return "STOP"
+
+            # Pedestrian or crosswalk: slow down
+            if "pedestrian" in classes or "crosswalk" in classes:
+                return "SLOW_DOWN"
+
+            return "NORMAL"
+        except Exception as e:
+            rospy.logwarn_throttle(5.0, f"[YOLO] {e}")
+            return "NORMAL"
 
     def detect_obstacle_motion(self, bgr):
         """
@@ -375,6 +418,10 @@ class LaneFollowerBFMC:
     def loop(self, _evt):
         if self.frame is None:
             return
+
+        self._yolo_frame_count += 1
+        if self._yolo_frame_count % self._yolo_every_n == 0:
+            self._yolo_action = self._yolo_detect(self.frame)
 
         # -------- HALT state: stop but keep checking if obstacle is gone --------
         if self.state == "HALT":
@@ -527,6 +574,14 @@ class LaneFollowerBFMC:
 
         if abs(cte) < self.deadband:
             cte = 0.0
+
+        # YOLO action overrides
+        if self._yolo_action == "STOP":
+            self.pub_speed(0.0)
+            self.pub_steer(self.last_steer)
+            return
+        if self._yolo_action == "SLOW_DOWN":
+            v = float(self.clamp(self.v_min, self.v_min, self.v_max))
 
         # Speed selection (slow in turns, slower while avoiding)
         turn_mag = min(1.0, abs(head)/0.40 + abs(cte)/0.45)
