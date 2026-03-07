@@ -9,6 +9,9 @@ from cv_bridge import CvBridge
 import os
 import base64
 import requests
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+from fsm_detection import BFMCStateMachine, parse_predictions, update_fsm, draw_fsm_overlay, State
 
 CAM_TOPIC   = "/automobile/camera1/image_raw"
 CMD_TOPIC   = "/automobile/command"
@@ -115,14 +118,14 @@ class LaneFollowerBFMC:
         self.halt_reason = ""
         self._halt_clear_count = 0  # consecutive frames with no stop-condition obstacle
 
-        # --- YOLO detection config ---
         self._yolo_api_key = os.environ.get("ROBOFLOW_API_KEY", "")
         self._yolo_url = "https://detect.roboflow.com/bfmc-6btkg/3"
-        self._yolo_every_n = 6
+        self._yolo_every_n = 5
         self._yolo_frame_count = 0
         self._yolo_action = "NORMAL"
-        self._stop_sign_resume_time = rospy.Time(0)
-        self._crosswalk_active = False
+        self._yolo_speed_scale = 1.0
+        self._last_predictions = []
+        self.fsm = BFMCStateMachine()
 
         rospy.Timer(rospy.Duration(1.0 / self.hz), self.loop)
         rospy.loginfo(
@@ -305,7 +308,7 @@ class LaneFollowerBFMC:
         dbg_full = self.make_debug_full(bgr, y0, overlay)
         cv2.putText(dbg_full, f"cte={cte:+.3f} head={heading_err:+.3f} avoid={avoid_norm:+.2f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0,255,255), 2)
-        cv2.putText(dbg_full, f"YOLO: {self._yolo_action}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
+        dbg_full = draw_fsm_overlay(dbg_full, self.fsm, self._yolo_action, self._yolo_speed_scale, self._last_predictions)
 
         return cte, heading_err, dbg_full
 
@@ -320,21 +323,13 @@ class LaneFollowerBFMC:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=3,
             )
-            preds = r.json().get("predictions", [])
-            classes = {p["class"] for p in preds}
-
-            # Stop sign: halt for 3 seconds then continue
-            if "stop_sign" in classes and rospy.Time.now() > self._stop_sign_resume_time:
-                self._stop_sign_resume_time = rospy.Time.now() + rospy.Duration(3.0)
-                return "STOP"
-            if rospy.Time.now() < self._stop_sign_resume_time:
-                return "STOP"
-
-            # Pedestrian or crosswalk: slow down
-            if "pedestrian" in classes or "crosswalk" in classes:
-                return "SLOW_DOWN"
-
-            return "NORMAL"
+            raw = r.json().get("predictions", [])
+            self._last_predictions = raw
+            det = parse_predictions(raw, bgr)
+            now = rospy.Time.now().to_sec()
+            action, speed_scale, self.fsm = update_fsm(self.fsm, det, now)
+            self._yolo_speed_scale = speed_scale
+            return action
         except Exception as e:
             rospy.logwarn_throttle(5.0, f"[YOLO] {e}")
             return "NORMAL"
@@ -580,12 +575,11 @@ class LaneFollowerBFMC:
             self.pub_speed(0.0)
             self.pub_steer(self.last_steer)
             return
-        if self._yolo_action == "SLOW_DOWN":
-            v = float(self.clamp(self.v_min, self.v_min, self.v_max))
 
         # Speed selection (slow in turns, slower while avoiding)
         turn_mag = min(1.0, abs(head)/0.40 + abs(cte)/0.45)
         v = self.v_max - turn_mag*(self.v_max - self.v_min)
+        v = v * self._yolo_speed_scale
         v = float(self.clamp(v, self.v_min, self.v_max))
 
         if self.avoid_slowdown and abs(avoid_norm) > 0.05:
