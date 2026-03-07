@@ -1,9 +1,10 @@
+import os
 import cv2
 import base64
 import requests
 import numpy as np
 
-API_KEY = "WfannhlmdFjwemdK3rzY"
+API_KEY = os.environ.get("ROBOFLOW_API_KEY", "")
 MODEL_ID = "bfmc-6btkg/3"
 API_URL = "https://detect.roboflow.com/bfmc-6btkg/3"
 
