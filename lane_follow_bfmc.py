@@ -12,6 +12,7 @@ import requests
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from fsm_detection import BFMCStateMachine, parse_predictions, update_fsm, draw_fsm_overlay, State
+from src.semaphore_listener import SemaphoreListener
 
 CAM_TOPIC   = "/automobile/camera1/image_raw"
 CMD_TOPIC   = "/automobile/command"
@@ -126,6 +127,8 @@ class LaneFollowerBFMC:
         self._yolo_speed_scale = 1.0
         self._last_predictions = []
         self.fsm = BFMCStateMachine()
+        self._semaphore = SemaphoreListener()
+        self._semaphore.start()
 
         rospy.Timer(rospy.Duration(1.0 / self.hz), self.loop)
         rospy.loginfo(
@@ -326,6 +329,13 @@ class LaneFollowerBFMC:
             raw = r.json().get("predictions", [])
             self._last_predictions = raw
             det = parse_predictions(raw, bgr)
+            v2x_state = self._semaphore.get_nearest_state()
+            if v2x_state is not None:
+                v2x_color = SemaphoreListener.state_to_color(v2x_state)
+                if v2x_color and not det.traffic_light_color:
+                    det.traffic_light_color = v2x_color
+                    det.classes.add(f"traffic_light_{v2x_color}")
+                    rospy.loginfo_throttle(2.0, f"[V2X] Using semaphore state: {v2x_color}")
             now = rospy.Time.now().to_sec()
             action, speed_scale, self.fsm = update_fsm(self.fsm, det, now)
             self._yolo_speed_scale = speed_scale
