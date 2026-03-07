@@ -3,6 +3,10 @@ import cv2
 import base64
 import requests
 import numpy as np
+import rospy
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
 
 API_KEY = os.environ.get("ROBOFLOW_API_KEY", "")
 MODEL_ID = "bfmc-6btkg/3"
@@ -64,34 +68,41 @@ def get_action(predictions):
     return "NORMAL"
 
 
+class ObjectDetectionNode:
+    def __init__(self):
+        self.bridge = CvBridge()
+        self.pub_action = rospy.Publisher("/detection/action", String, queue_size=10)
+        self.pub_debug = rospy.Publisher("/detection/debug_image", Image, queue_size=1)
+        self.sub = rospy.Subscriber(
+            "/automobile/camera1/image_raw", Image, self.cb, queue_size=1
+        )
+        self._frame_count = 0
+        self._predictions = []
+        rospy.loginfo("[object_detection] Node ready")
+
+    def cb(self, msg):
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as e:
+            rospy.logwarn_throttle(2.0, f"cv_bridge: {e}")
+            return
+
+        if self._frame_count % 3 == 0:
+            self._predictions = run_detection(frame)
+
+        self._frame_count += 1
+
+        action = get_action(self._predictions)
+        self.pub_action.publish(String(data=action))
+
+        annotated = draw_detections(frame.copy(), self._predictions)
+        try:
+            self.pub_debug.publish(self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8"))
+        except Exception as e:
+            rospy.logwarn_throttle(2.0, f"debug publish: {e}")
+
+
 if __name__ == "__main__":
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: could not open camera.")
-        raise SystemExit(1)
-
-    frame_count = 0
-    predictions = []
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: failed to read frame.")
-            break
-
-        if frame_count % 3 == 0:
-            predictions = run_detection(frame)
-
-        frame = draw_detections(frame, predictions)
-        action = get_action(predictions)
-        print(f"Frame {frame_count} | Action: {action}")
-
-        cv2.imshow("BFMC Object Detection", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-        frame_count += 1
-
-    cap.release()
-    cv2.destroyAllWindows()
+    rospy.init_node("object_detection")
+    ObjectDetectionNode()
+    rospy.spin()
