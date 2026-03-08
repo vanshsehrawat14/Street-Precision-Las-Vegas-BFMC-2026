@@ -2,7 +2,7 @@
 BFMC Simple Object Detection Test
 
 This script runs on the Jetson and connects to the BFMC Brain on the Raspberry Pi.
-It uses the camera to detect large objects in front of the car. If an object is
+It uses the USB camera to detect large objects in front of the car. If an object is
 detected, the car stops. If the path is clear, the car drives forward.
 
 Before running:
