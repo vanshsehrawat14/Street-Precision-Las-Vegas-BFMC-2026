@@ -57,6 +57,14 @@ class LaneFollowerBFMC:
         self.margin       = rospy.get_param("~margin", 90)
         self.minpix       = rospy.get_param("~minpix", 60)
 
+        # Minimum histogram column-sum to trust a lane base; prevents argmax
+        # returning 0 on an empty half and spawning spurious left-edge windows.
+        self.hist_min_peak = rospy.get_param("~hist_min_peak", 10)
+        # Half-lane-width as a fraction of roi_w, used when only one lane is
+        # visible.  0.42 overestimates BFMC simulator geometry and pulls the
+        # estimated centre left; 0.38 matches ~1 m road at ~70 deg FOV.
+        self.lane_half_w   = rospy.get_param("~lane_half_w", 0.38)
+
         self.look_y       = rospy.get_param("~look_y", 0.45)
         self.near_y       = rospy.get_param("~near_y", 0.85)
 
@@ -164,49 +172,56 @@ class LaneFollowerBFMC:
 
         hist = np.sum(binary[h//2:, :] > 0, axis=0)
         midpoint = w // 2
-        leftx_base = int(np.argmax(hist[:midpoint]))
-        rightx_base = int(np.argmax(hist[midpoint:]) + midpoint)
+
+        # Guard: np.argmax returns 0 on an all-zero array, which plants every
+        # left window at x=0 and causes noise near the left edge to accumulate
+        # into a spurious left_fit, pulling the computed centre hard left.
+        # Only use a side's histogram peak if it has real pixels in it.
+        left_peak  = int(np.max(hist[:midpoint])) if midpoint > 0 else 0
+        right_peak = int(np.max(hist[midpoint:])) if midpoint < w  else 0
+
+        leftx_base  = int(np.argmax(hist[:midpoint]))          if left_peak  >= self.hist_min_peak else None
+        rightx_base = int(np.argmax(hist[midpoint:]) + midpoint) if right_peak >= self.hist_min_peak else None
 
         nonzero = binary.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
 
-        leftx_current = leftx_base
+        leftx_current  = leftx_base
         rightx_current = rightx_base
 
         window_height = h // self.nwindows
-        left_lane_inds = []
+        left_lane_inds  = []
         right_lane_inds = []
 
         for window in range(self.nwindows):
             win_y_low  = h - (window + 1) * window_height
-            win_y_high = h - window * window_height
+            win_y_high = h -  window      * window_height
 
-            win_xleft_low  = leftx_current - self.margin
-            win_xleft_high = leftx_current + self.margin
-            win_xright_low  = rightx_current - self.margin
-            win_xright_high = rightx_current + self.margin
+            if leftx_current is not None:
+                win_xleft_low  = leftx_current - self.margin
+                win_xleft_high = leftx_current + self.margin
+                cv2.rectangle(out, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 255, 0), 2)
+                good_left = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
+                             (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
+                left_lane_inds.append(good_left)
+                if len(good_left) > self.minpix:
+                    leftx_current = int(np.mean(nonzerox[good_left]))
 
-            cv2.rectangle(out, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 255, 0), 2)
-            cv2.rectangle(out, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (0, 255, 0), 2)
+            if rightx_current is not None:
+                win_xright_low  = rightx_current - self.margin
+                win_xright_high = rightx_current + self.margin
+                cv2.rectangle(out, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (0, 255, 0), 2)
+                good_right = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
+                              (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
+                right_lane_inds.append(good_right)
+                if len(good_right) > self.minpix:
+                    rightx_current = int(np.mean(nonzerox[good_right]))
 
-            good_left = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
-                         (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
-            good_right = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
-                          (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
+        left_lane_inds  = np.concatenate(left_lane_inds)  if left_lane_inds  else np.array([], dtype=int)
+        right_lane_inds = np.concatenate(right_lane_inds) if right_lane_inds else np.array([], dtype=int)
 
-            left_lane_inds.append(good_left)
-            right_lane_inds.append(good_right)
-
-            if len(good_left) > self.minpix:
-                leftx_current = int(np.mean(nonzerox[good_left]))
-            if len(good_right) > self.minpix:
-                rightx_current = int(np.mean(nonzerox[good_right]))
-
-        left_lane_inds = np.concatenate(left_lane_inds) if len(left_lane_inds) else np.array([])
-        right_lane_inds = np.concatenate(right_lane_inds) if len(right_lane_inds) else np.array([])
-
-        left_fit = None
+        left_fit  = None
         right_fit = None
 
         if left_lane_inds.size > 200:
@@ -256,9 +271,9 @@ class LaneFollowerBFMC:
         if xl_far is not None and xr_far is not None:
             c_far = 0.5*(xl_far + xr_far)
         elif xl_far is not None:
-            c_far = xl_far + 0.42*roi_w
+            c_far = xl_far + self.lane_half_w*roi_w
         elif xr_far is not None:
-            c_far = xr_far - 0.42*roi_w
+            c_far = xr_far - self.lane_half_w*roi_w
         else:
             dbg_full = self.make_debug_full(bgr, y0, overlay)
             cv2.putText(dbg_full, "NO LANES", (10, 30),
@@ -268,9 +283,9 @@ class LaneFollowerBFMC:
         if xl_near is not None and xr_near is not None:
             c_near = 0.5*(xl_near + xr_near)
         elif xl_near is not None:
-            c_near = xl_near + 0.42*roi_w
+            c_near = xl_near + self.lane_half_w*roi_w
         elif xr_near is not None:
-            c_near = xr_near - 0.42*roi_w
+            c_near = xr_near - self.lane_half_w*roi_w
         else:
             return None, None, self.make_debug_full(bgr, y0, overlay)
 
