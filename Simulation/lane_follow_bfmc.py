@@ -18,6 +18,13 @@ CAM_TOPIC   = "/automobile/camera1/image_raw"
 CMD_TOPIC   = "/automobile/command"
 DEBUG_TOPIC = "/lane_follow/debug_image"
 
+# ── BYPASS MODE ───────────────────────────────────────────────────────────────
+# Set True to skip ALL detection and send fixed speed=0.10, steer=0.0.
+# Diagnostic test:
+#   Car still turns left  → steering commands / sign convention are wrong
+#   Car goes straight     → the detection/steering calculation is the bug
+BYPASS_DETECTION = True
+
 
 class LaneFollowerBFMC:
     def __init__(self):
@@ -158,9 +165,11 @@ class LaneFollowerBFMC:
             rospy.logwarn_throttle(2.0, f"cv_bridge: {e}")
 
     def pub_speed(self, v):
+        rospy.loginfo(f"[CMD] speed={float(v):.4f}")
         self.pub_cmd.publish(String(data=json.dumps({"action": "1", "speed": float(v)})))
 
     def pub_steer(self, a):
+        rospy.loginfo(f"[CMD] steer={float(a):.4f}  key={self.steer_key}")
         self.pub_cmd.publish(String(data=json.dumps({"action": "2", self.steer_key: float(a)})))
 
     @staticmethod
@@ -466,6 +475,12 @@ class LaneFollowerBFMC:
             f"FSM={self.fsm.state.name} "
             f"yolo={self._yolo_action}"
         )
+
+        # -------- BYPASS MODE (skip all detection, send fixed commands) --------
+        if BYPASS_DETECTION:
+            self.pub_speed(0.10)
+            self.pub_steer(0.0)
+            return
 
         self._yolo_frame_count += 1
         if self._yolo_frame_count % self._yolo_every_n == 0:
