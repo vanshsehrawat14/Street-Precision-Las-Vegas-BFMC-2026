@@ -37,7 +37,7 @@ MIN_SPEED = 55
 MAX_STEER = 140
 KP_CTE = 110        # position error gain
 KP_HEAD = 90        # heading error gain
-STEER_SMOOTH = 0.72
+STEER_SMOOTH = 0.65
 LOST_LIMIT = 8
 
 ROI_Y_START = 0.55
@@ -50,8 +50,9 @@ TARGET_X_BIAS = 0
 
 NEAR_ROW_FRAC = 0.78   # lower row in ROI
 FAR_ROW_FRAC  = 0.38   # upper row in ROI
+FAR2_ROW_FRAC = 0.25   # second far row (higher up, earlier curve detection)
 
-MIN_ROW_PIXELS = 8
+MIN_ROW_PIXELS = 12
 
 
 class BFMCController:
@@ -144,9 +145,11 @@ def main():
             roi_h, roi_w = mask.shape[:2]
             near_y = int(NEAR_ROW_FRAC * (roi_h - 1))
             far_y = int(FAR_ROW_FRAC * (roi_h - 1))
+            far2_y = int(FAR2_ROW_FRAC * (roi_h - 1))
 
             near_x = row_center(mask, near_y)
             far_x = row_center(mask, far_y)
+            far2_x = row_center(mask, far2_y)
 
             dbg = frame.copy()
             cv2.rectangle(dbg, (0, y1), (w - 1, y2), (0, 255, 255), 2)
@@ -159,11 +162,12 @@ def main():
                 cv2.putText(dbg, f"LINE LOST {lost_count}", (20, 40),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-                if lost_count >= LOST_LIMIT:
-                    car.stop()
-                else:
-                    car.set_speed(0)
+                if lost_count < 4:
                     car.set_steer(last_steer)
+                elif lost_count < 8:
+                    car.set_steer(int(last_steer * 0.5))
+                else:
+                    car.stop()
 
                 cv2.imshow("lane_debug", dbg)
                 cv2.imshow("lane_mask", mask)
@@ -173,13 +177,19 @@ def main():
 
             lost_count = 0
 
-            # if far point missing, reuse near point
-            if far_x is None:
+            # average far point with second far point if both valid; fallback to near
+            if far_x is not None and far2_x is not None:
+                far_x = (far_x + far2_x) // 2
+            elif far_x is None and far2_x is not None:
+                far_x = far2_x
+            elif far_x is None:
                 far_x = near_x
 
             # draw sampled points
             cv2.circle(dbg, (near_x, y1 + near_y), 7, (0, 255, 0), -1)
             cv2.circle(dbg, (far_x, y1 + far_y), 7, (0, 0, 255), -1)
+            if far2_x is not None:
+                cv2.circle(dbg, (far2_x, y1 + far2_y), 6, (255, 0, 255), -1)
             cv2.line(dbg, (near_x, y1 + near_y), (far_x, y1 + far_y), (0, 255, 0), 2)
 
             # cross-track error: near point vs target
@@ -194,12 +204,15 @@ def main():
             steer_cmd = int(STEER_SMOOTH * last_steer + (1.0 - STEER_SMOOTH) * raw_steer)
             last_steer = steer_cmd
 
-            # slow down on bigger steering
-            speed_cmd = BASE_SPEED
-            if abs(steer_cmd) > 90:
+            # slow down on bigger steering (three tiers)
+            if abs(steer_cmd) > 100:
                 speed_cmd = MIN_SPEED
-            elif abs(steer_cmd) > 50:
-                speed_cmd = 60
+            elif abs(steer_cmd) > 70:
+                speed_cmd = 62
+            elif abs(steer_cmd) > 40:
+                speed_cmd = 72
+            else:
+                speed_cmd = BASE_SPEED
 
             car.set_steer(steer_cmd)
             car.set_speed(speed_cmd)
