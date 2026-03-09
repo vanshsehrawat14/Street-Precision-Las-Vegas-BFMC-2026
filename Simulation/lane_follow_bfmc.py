@@ -23,7 +23,7 @@ DEBUG_TOPIC = "/lane_follow/debug_image"
 # Diagnostic test:
 #   Car still turns left  → steering commands / sign convention are wrong
 #   Car goes straight     → the detection/steering calculation is the bug
-BYPASS_DETECTION = True
+BYPASS_DETECTION = False
 
 
 class LaneFollowerBFMC:
@@ -54,9 +54,16 @@ class LaneFollowerBFMC:
 
         self.invert_steer = rospy.get_param("~invert_steer", False)
         self.steer_key    = rospy.get_param("~steer_key", "steerAngle")  # try "steer" if needed
+        # Trim added to every steer command to correct simulator straight-line offset.
+        # Tune this until steer=0 drives straight in bypass mode.
+        self.steer_trim   = rospy.get_param("~steer_trim", 0.0)
+        # Extra rightward steer added when CTE has been positive for 3+ consecutive
+        # frames, helping the car commit to right turns before the lane exits the ROI.
+        self.turn_anticipation = rospy.get_param("~turn_anticipation", 0.15)
 
         # -------- Lane Vision (white-only lanes) --------
-        self.roi_start    = rospy.get_param("~roi_start", 0.60)
+        # 0.50 (bottom 50%) gives earlier visibility of approaching turns vs 0.60.
+        self.roi_start    = rospy.get_param("~roi_start", 0.50)
         self.thresh       = rospy.get_param("~thresh", 200)
         self.morph_k      = rospy.get_param("~morph_k", 5)
 
@@ -70,7 +77,11 @@ class LaneFollowerBFMC:
         # Half-lane-width as a fraction of roi_w, used when only one lane is
         # visible.  0.42 overestimates BFMC simulator geometry and pulls the
         # estimated centre left; 0.38 matches ~1 m road at ~70 deg FOV.
-        self.lane_half_w   = rospy.get_param("~lane_half_w", 0.38)
+        self.lane_half_w     = rospy.get_param("~lane_half_w", 0.38)
+        # Extra rightward shift (fraction of roi_w) applied to the estimated centre
+        # when only the RIGHT lane is visible.  Anticipates right turns where the
+        # left lane has already exited the ROI.
+        self.right_only_bias = rospy.get_param("~right_only_bias", 0.10)
 
         self.look_y       = rospy.get_param("~look_y", 0.45)
         self.near_y       = rospy.get_param("~near_y", 0.85)
@@ -137,6 +148,7 @@ class LaneFollowerBFMC:
         self._dbg_rightx_base = None    # histogram base x for right lane
         self._dbg_cte         = None    # cte from previous frame
         self._no_lane_count   = 0       # consecutive frames with no lanes at all
+        self._pos_cte_count   = 0       # consecutive frames where cte > deadband (right-turn anticipation)
 
         self.state = "DRIVE"  # DRIVE or HALT
         self.halt_reason = ""
@@ -169,8 +181,9 @@ class LaneFollowerBFMC:
         self.pub_cmd.publish(String(data=json.dumps({"action": "1", "speed": float(v)})))
 
     def pub_steer(self, a):
-        rospy.loginfo(f"[CMD] steer={float(a):.4f}  key={self.steer_key}")
-        self.pub_cmd.publish(String(data=json.dumps({"action": "2", self.steer_key: float(a)})))
+        trimmed = float(a) + self.steer_trim
+        rospy.loginfo(f"[CMD] steer={trimmed:.4f} (raw={float(a):.4f} trim={self.steer_trim:.4f})  key={self.steer_key}")
+        self.pub_cmd.publish(String(data=json.dumps({"action": "2", self.steer_key: trimmed})))
 
     @staticmethod
     def clamp(x, lo, hi):
@@ -296,7 +309,9 @@ class LaneFollowerBFMC:
         elif xl_far is not None:
             c_far = xl_far + self.lane_half_w*roi_w
         elif xr_far is not None:
-            c_far = xr_far - self.lane_half_w*roi_w
+            # Right-only: shift centre rightward to anticipate right turns where the
+            # left lane has already left the ROI.
+            c_far = xr_far - self.lane_half_w*roi_w + self.right_only_bias*roi_w
         else:
             dbg_full = self.make_debug_full(bgr, y0, overlay)
             cv2.putText(dbg_full, "NO LANES", (10, 30),
@@ -308,7 +323,7 @@ class LaneFollowerBFMC:
         elif xl_near is not None:
             c_near = xl_near + self.lane_half_w*roi_w
         elif xr_near is not None:
-            c_near = xr_near - self.lane_half_w*roi_w
+            c_near = xr_near - self.lane_half_w*roi_w + self.right_only_bias*roi_w
         else:
             return None, None, self.make_debug_full(bgr, y0, overlay)
 
@@ -626,6 +641,7 @@ class LaneFollowerBFMC:
             pass
 
         if cte is None:
+            self._pos_cte_count = 0
             self._no_lane_count += 1
             self.lost_count += 1
             if self._no_lane_count >= 3:
@@ -645,6 +661,12 @@ class LaneFollowerBFMC:
 
         self._no_lane_count = 0
         self.lost_count = 0
+
+        # Track positive CTE streak BEFORE deadband zeroing (right-turn anticipation).
+        if cte > self.deadband:
+            self._pos_cte_count += 1
+        else:
+            self._pos_cte_count = 0
 
         if abs(cte) < self.deadband:
             cte = 0.0
@@ -667,6 +689,12 @@ class LaneFollowerBFMC:
         # Steering (Stanley-like) + FORCE bias to commit sideways
         steer = (self.k_heading * head) + np.arctan2(self.k_stanley * cte, (v + 1e-3))
         steer += float(self.avoid_steer_bias) * float(avoid_norm)
+
+        # Turn anticipation: after 3+ consecutive frames of positive CTE the car is
+        # consistently tracking right of centre — push extra steer right so it commits
+        # to the corner before the lane exits the ROI.
+        if self._pos_cte_count >= 3:
+            steer += float(self.turn_anticipation)
 
         # On sharp turns or when drifting, boost steering to recover sooner
         if abs(cte) >= float(self.turn_boost_cte_thr) or abs(head) >= float(self.turn_boost_heading_thr):
