@@ -34,10 +34,10 @@ class LaneFollowerBFMC:
         self.max_steer = rospy.get_param("~max_steer", 10.0)
         self.min_steer = rospy.get_param("~min_steer", 7.22)
 
-        self.k_stanley = rospy.get_param("~k_stanley", 7.5)
-        self.k_heading = rospy.get_param("~k_heading", 3.8)
+        self.k_stanley = rospy.get_param("~k_stanley", 6.0)
+        self.k_heading = rospy.get_param("~k_heading", 2.5)
 
-        self.steer_smooth = rospy.get_param("~steer_smooth", 0.20)
+        self.steer_smooth = rospy.get_param("~steer_smooth", 0.35)
         self.deadband     = rospy.get_param("~deadband", 0.01)
 
         # Boost steering on sharp turns / when drifting (get back on track faster)
@@ -49,7 +49,7 @@ class LaneFollowerBFMC:
         self.steer_key    = rospy.get_param("~steer_key", "steerAngle")  # try "steer" if needed
 
         # -------- Lane Vision (white-only lanes) --------
-        self.roi_start    = rospy.get_param("~roi_start", 0.55)
+        self.roi_start    = rospy.get_param("~roi_start", 0.60)
         self.thresh       = rospy.get_param("~thresh", 200)
         self.morph_k      = rospy.get_param("~morph_k", 5)
 
