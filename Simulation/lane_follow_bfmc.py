@@ -123,6 +123,14 @@ class LaneFollowerBFMC:
         self.last_steer = 0.0
         self.lost_count = 0
 
+        # -------- Debug diagnostics (cached from previous frame, logged at loop top) --------
+        self._dbg_left_fit    = False   # left_fit found?
+        self._dbg_right_fit   = False   # right_fit found?
+        self._dbg_leftx_base  = None    # histogram base x for left lane
+        self._dbg_rightx_base = None    # histogram base x for right lane
+        self._dbg_cte         = None    # cte from previous frame
+        self._no_lane_count   = 0       # consecutive frames with no lanes at all
+
         self.state = "DRIVE"  # DRIVE or HALT
         self.halt_reason = ""
         self._halt_clear_count = 0  # consecutive frames with no stop-condition obstacle
@@ -182,6 +190,10 @@ class LaneFollowerBFMC:
 
         leftx_base  = int(np.argmax(hist[:midpoint]))          if left_peak  >= self.hist_min_peak else None
         rightx_base = int(np.argmax(hist[midpoint:]) + midpoint) if right_peak >= self.hist_min_peak else None
+
+        # Cache for diagnostic logging
+        self._dbg_leftx_base  = leftx_base
+        self._dbg_rightx_base = rightx_base
 
         nonzero = binary.nonzero()
         nonzeroy = np.array(nonzero[0])
@@ -254,6 +266,8 @@ class LaneFollowerBFMC:
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
 
         left_fit, right_fit, overlay = self.sliding_window_fit(binary)
+        self._dbg_left_fit  = left_fit  is not None
+        self._dbg_right_fit = right_fit is not None
 
         y_far  = int(self.clamp(self.look_y, 0.0, 1.0) * (roi_h - 1))
         y_near = int(self.clamp(self.near_y, 0.0, 1.0) * (roi_h - 1))
@@ -439,6 +453,20 @@ class LaneFollowerBFMC:
         if self.frame is None:
             return
 
+        # -------- Per-frame diagnostic log (values from previous frame) --------
+        _cte_s = f"{self._dbg_cte:+.3f}" if self._dbg_cte is not None else "  None"
+        rospy.loginfo_throttle(0.5,
+            f"[DIAG] "
+            f"L={'YES' if self._dbg_left_fit  else 'NO ':3s} "
+            f"R={'YES' if self._dbg_right_fit else 'NO ':3s} "
+            f"lbase={str(self._dbg_leftx_base):>5s} "
+            f"rbase={str(self._dbg_rightx_base):>5s} "
+            f"cte={_cte_s} "
+            f"steer={self.last_steer:+.2f} "
+            f"FSM={self.fsm.state.name} "
+            f"yolo={self._yolo_action}"
+        )
+
         self._yolo_frame_count += 1
         if self._yolo_frame_count % self._yolo_every_n == 0:
             self._yolo_action = self._yolo_detect(self.frame)
@@ -569,6 +597,7 @@ class LaneFollowerBFMC:
 
         # -------- Lane following (with avoid_norm bias) --------
         cte, head, dbg = self.estimate_center_and_heading(self.frame, avoid_norm=avoid_norm)
+        self._dbg_cte = cte  # cache for next frame's top-of-loop log
 
         # Always use lane view for debug (avoids flicker from alternating lane/obstacle image)
         if dbg is not None:
@@ -582,14 +611,24 @@ class LaneFollowerBFMC:
             pass
 
         if cte is None:
+            self._no_lane_count += 1
             self.lost_count += 1
-            if self.stop_on_lost and self.lost_count >= self.lost_limit:
+            if self._no_lane_count >= 3:
+                rospy.logwarn_throttle(1.0,
+                    f"[lane_follow_bfmc] NO LANES DETECTED - STOPPING "
+                    f"({self._no_lane_count} consecutive frames)")
                 self.pub_speed(0.0)
+                self.pub_steer(0.0)
+                self.last_steer = 0.0
+            elif self.stop_on_lost and self.lost_count >= self.lost_limit:
+                self.pub_speed(0.0)
+                self.pub_steer(self.last_steer)
             else:
                 self.pub_speed(self.v_min)
-            self.pub_steer(self.last_steer)
+                self.pub_steer(self.last_steer)
             return
 
+        self._no_lane_count = 0
         self.lost_count = 0
 
         if abs(cte) < self.deadband:
