@@ -60,10 +60,12 @@ class LaneFollowerBFMC:
         # Minimum histogram column-sum to trust a lane base; prevents argmax
         # returning 0 on an empty half and spawning spurious left-edge windows.
         self.hist_min_peak = rospy.get_param("~hist_min_peak", 10)
-        # Half-lane-width as a fraction of roi_w, used when only one lane is
-        # visible.  0.42 overestimates BFMC simulator geometry and pulls the
-        # estimated centre left; 0.38 matches ~1 m road at ~70 deg FOV.
-        self.lane_half_w   = rospy.get_param("~lane_half_w", 0.38)
+        # Half-lane-width as a fraction of roi_w, used in the single-line fallback.
+        # BFMC lane occupies ~60% of frame width, so half = 0.30.
+        # Using 0.38 placed the estimated centre ~50px too far LEFT on right-only
+        # detection (c_far = xr - 0.38*w vs correct xr - 0.30*w), producing a
+        # persistent negative CTE and left steer on every straight frame.
+        self.lane_half_w   = rospy.get_param("~lane_half_w", 0.30)
 
         self.look_y       = rospy.get_param("~look_y", 0.45)
         self.near_y       = rospy.get_param("~near_y", 0.85)
@@ -197,6 +199,10 @@ class LaneFollowerBFMC:
         self._dbg_leftx_base  = leftx_base
         self._dbg_rightx_base = rightx_base
 
+        rospy.loginfo_throttle(0.5,
+            f"[HIST] lpeak={left_peak} lbase={leftx_base}  rpeak={right_peak} rbase={rightx_base}"
+        )
+
         nonzero = binary.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
@@ -313,6 +319,11 @@ class LaneFollowerBFMC:
 
         cte = (c_far - cx) / cx
         cte = float(self.clamp(cte, -1.0, 1.0))
+
+        rospy.loginfo_throttle(0.5,
+            f"[LANES] lbase={self._dbg_leftx_base} rbase={self._dbg_rightx_base} "
+            f"center_px={c_far:.1f} frame_cx={cx:.1f} cte={cte:+.3f} steer={self.last_steer:+.2f}"
+        )
 
         dx = (c_far - c_near)
         dy = (y_far - y_near)
