@@ -11,7 +11,7 @@ import base64
 import requests
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-from fsm_detection import BFMCStateMachine, parse_predictions, update_fsm, draw_fsm_overlay, State
+from fsm_detection import BFMCStateMachine, parse_predictions, update_fsm, draw_fsm_overlay
 from src.semaphore_listener import SemaphoreListener
 
 CAM_TOPIC   = "/automobile/camera1/image_raw"
@@ -26,7 +26,7 @@ class LaneFollowerBFMC:
         self.pub_dbg = rospy.Publisher(DEBUG_TOPIC, Image, queue_size=1)
         self.sub = rospy.Subscriber(CAM_TOPIC, Image, self.cb, queue_size=1)
 
-        # -------- Controls --------
+        # -------- Control gains --------
         self.hz        = rospy.get_param("~hz", 20)
         self.v_max     = rospy.get_param("~v_max", 0.16)
         self.v_min     = rospy.get_param("~v_min", 0.08)

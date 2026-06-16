@@ -24,7 +24,7 @@ class SemaphoreListener:
         self._running = True
         self._thread = threading.Thread(target=self._listen, daemon=True)
         self._thread.start()
-        rospy.loginfo("[V2X] Semaphore listener started on UDP port 5007")
+        rospy.loginfo("[V2X] Semaphore listener started on UDP 5007")
 
     def stop(self):
         self._running = False

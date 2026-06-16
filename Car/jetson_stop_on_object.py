@@ -58,7 +58,7 @@ while True:
 
     h, w = frame.shape[:2]
 
-    # center region
+    # center region of the frame
     roi = frame[int(h*0.4):int(h*0.9), int(w*0.3):int(w*0.7)]
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)

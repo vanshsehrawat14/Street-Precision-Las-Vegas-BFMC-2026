@@ -81,7 +81,7 @@ if not cap.isOpened():
 
 print("Starting traffic light detection... Press ESC to quit.")
 
-last_state = "STOP"   # safer default
+last_state = "STOP"   # default to stopped until a clear signal shows up
 last_seen_time = time.time()
 
 try:

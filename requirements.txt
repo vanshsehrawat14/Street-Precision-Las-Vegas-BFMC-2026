@@ -1,3 +1,13 @@
+# Python deps for the pip-installable parts of the repo
+# Simulation also needs ROS 1 (Noetic) for rospy + cv_bridge (not pip-installable)
+
+# Vision deps (Car demos + Simulation)
 opencv-python
-requests
 numpy
+
+# Roboflow inference client (Simulation detection)
+requests
+
+# Socket.IO client for the Jetson -> Pi Brain link (Car demos)
+python-socketio
+websocket-client

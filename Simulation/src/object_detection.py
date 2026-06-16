@@ -78,7 +78,7 @@ class ObjectDetectionNode:
         )
         self._frame_count = 0
         self._predictions = []
-        rospy.loginfo("[object_detection] Node ready")
+        rospy.loginfo("[object_detection] node ready")
 
     def cb(self, msg):
         try:

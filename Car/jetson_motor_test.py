@@ -10,7 +10,7 @@ Before running:
 2. SSH into the Raspberry Pi and make sure main.py is running.
 3. On another monitor, run this script from the Jetson.
 
-This is mainly used to quickly test that the Jetson ↔ Pi communication and
+This is mainly used to quickly test that the Jetson to Pi communication and
 car movement are working.
 """
 
@@ -42,7 +42,7 @@ sio.connect("http://192.168.50.1:5005")
 
 time.sleep(1)
 
-# Start session
+# Start session and switch to manual driving
 send('{"Name": "SessionAccess"}')
 send('{"Name": "Klem", "Value": "30"}')
 send('{"Name": "DrivingMode", "Value": "manual"}')

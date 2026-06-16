@@ -164,8 +164,10 @@ def main():
 
                 if lost_count < 4:
                     car.set_steer(last_steer)
+                    car.set_speed(MIN_SPEED)   # creep, don't barrel ahead blind
                 elif lost_count < 8:
                     car.set_steer(int(last_steer * 0.5))
+                    car.set_speed(MIN_SPEED)
                 else:
                     car.stop()
 

@@ -19,7 +19,7 @@ class LaneFollowerBFMC:
         self.pub_dbg = rospy.Publisher(DEBUG_TOPIC, Image, queue_size=1)
         self.sub = rospy.Subscriber(CAM_TOPIC, Image, self.cb, queue_size=1)
 
-        # Controls (updated for BFMC speed requirements)
+        # Controls (tuned for BFMC speed requirements)
         self.hz = rospy.get_param("~hz", 20)
         self.v_max = rospy.get_param("~v_max", 0.28)  # 28 cm/s city (above 20 cm/s min)
         self.v_min = rospy.get_param("~v_min", 0.15)  # 15 cm/s for tight curves

@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-fsm_detection.py  –  Street Precision Las Vegas BFMC 2026
-==========================================================
-Finite State Machine + YOLO detection integration.
+Finite-state machine and detection parsing for the BFMC pipeline.
 
-Drop-in upgrade for lane_follow_bfmc.py.
-Add to __init__:
-    from fsm_detection import BFMCStateMachine
-    self.fsm = BFMCStateMachine()
+Consumed by lane_follow_bfmc.py. Raw Roboflow predictions are turned into a
+structured Detection (parse_predictions); the FSM advances one step per frame
+(update_fsm) and returns a driving action together with a speed scale:
 
-In loop(), replace the _yolo_detect block with:
-    if self._yolo_frame_count % self._yolo_every_n == 0:
-        self._yolo_action, self.fsm = update_fsm(self.fsm, self._yolo_detect(self.frame), rospy)
+    action       one of "NORMAL", "SLOW_DOWN", "STOP"
+    speed_scale  1.0 = full speed, 0.0 = stopped
+
+States cover stop signs, traffic lights, and pedestrians/crosswalks.
+draw_fsm_overlay renders the current state and detections onto a frame.
 """
 
 import cv2
@@ -21,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-# ── FSM States ────────────────────────────────────────────────────────────────
+# FSM states
 
 class State(Enum):
     DRIVE           = auto()   # Normal lane following
@@ -35,7 +34,7 @@ class State(Enum):
     EMERGENCY_STOP  = auto()   # Obstacle too close (existing logic)
 
 
-# ── Detection result ──────────────────────────────────────────────────────────
+# Detection result
 
 @dataclass
 class Detection:
@@ -46,7 +45,7 @@ class Detection:
     raw_predictions: list = field(default_factory=list)
 
 
-# ── FSM context ───────────────────────────────────────────────────────────────
+# FSM context
 
 @dataclass
 class BFMCStateMachine:
@@ -59,7 +58,7 @@ class BFMCStateMachine:
     approach_speed_scale: float = 0.5   # slow to 50% when approaching
 
 
-# ── Traffic light color detector ──────────────────────────────────────────────
+# Traffic light color detector
 
 def detect_traffic_light_color(bgr_crop: np.ndarray) -> Optional[str]:
     """
@@ -102,7 +101,7 @@ def detect_traffic_light_color(bgr_crop: np.ndarray) -> Optional[str]:
     return best
 
 
-# ── Parse raw Roboflow predictions ───────────────────────────────────────────
+# Parse raw Roboflow predictions
 
 def parse_predictions(raw_predictions: list, frame: np.ndarray) -> Detection:
     """Convert Roboflow predictions into a structured Detection object."""
@@ -139,7 +138,7 @@ def parse_predictions(raw_predictions: list, frame: np.ndarray) -> Detection:
     return det
 
 
-# ── FSM transition logic ──────────────────────────────────────────────────────
+# FSM transition logic
 
 def update_fsm(fsm: BFMCStateMachine, det: Detection,
                now_sec: float) -> tuple:
@@ -152,7 +151,7 @@ def update_fsm(fsm: BFMCStateMachine, det: Detection,
     """
     s = fsm.state
 
-    # ── DRIVE ────────────────────────────────────────────────────────────────
+    # DRIVE
     if s == State.DRIVE:
         # Stop sign visible and not in ignore window
         if "stop_sign" in det.classes and now_sec > fsm.ignore_stop_until:
@@ -175,54 +174,54 @@ def update_fsm(fsm: BFMCStateMachine, det: Detection,
 
         return "NORMAL", 1.0, fsm
 
-    # ── APPROACHING_STOP ─────────────────────────────────────────────────────
+    # APPROACHING_STOP
     elif s == State.APPROACHING_STOP:
         if "stop_sign" in det.classes and now_sec > fsm.ignore_stop_until:
-            # Still seeing sign — keep slowing
+            # Still seeing sign, keep slowing
             return "SLOW_DOWN", fsm.approach_speed_scale, fsm
         else:
-            # Sign disappeared (car is at line) OR ignore window — full stop
+            # Sign disappeared (car is at line) or ignore window: full stop
             fsm.state = State.STOPPED_AT_SIGN
             fsm.state_entered_at = now_sec
             return "STOP", 0.0, fsm
 
-    # ── STOPPED_AT_SIGN ──────────────────────────────────────────────────────
+    # STOPPED_AT_SIGN
     elif s == State.STOPPED_AT_SIGN:
         elapsed = now_sec - fsm.state_entered_at
         if elapsed >= fsm.stop_hold_secs:
-            # Done waiting — resume and ignore stop sign for 5 seconds
+            # Done waiting; resume and ignore stop sign for 5 seconds
             fsm.state = State.RESUMING
             fsm.state_entered_at = now_sec
             fsm.ignore_stop_until = now_sec + 5.0
             return "NORMAL", 1.0, fsm
         return "STOP", 0.0, fsm
 
-    # ── RESUMING ─────────────────────────────────────────────────────────────
+    # RESUMING
     elif s == State.RESUMING:
         # Back to normal driving after leaving stop sign
         fsm.state = State.DRIVE
         return "NORMAL", 1.0, fsm
 
-    # ── TRAFFIC_RED ──────────────────────────────────────────────────────────
+    # TRAFFIC_RED
     elif s == State.TRAFFIC_RED:
         if det.traffic_light_color == "green":
             fsm.state = State.TRAFFIC_GREEN
             fsm.state_entered_at = now_sec
             return "NORMAL", 1.0, fsm
         if det.traffic_light_color != "red" and det.traffic_light_color is None:
-            # Light disappeared — wait a moment then go
+            # Light disappeared, wait a moment then go
             elapsed = now_sec - fsm.state_entered_at
             if elapsed > 3.0:
                 fsm.state = State.DRIVE
                 return "NORMAL", 1.0, fsm
         return "STOP", 0.0, fsm
 
-    # ── TRAFFIC_GREEN ────────────────────────────────────────────────────────
+    # TRAFFIC_GREEN
     elif s == State.TRAFFIC_GREEN:
         fsm.state = State.DRIVE
         return "NORMAL", 1.0, fsm
 
-    # ── PEDESTRIAN_WAIT ──────────────────────────────────────────────────────
+    # PEDESTRIAN_WAIT
     elif s == State.PEDESTRIAN_WAIT:
         ped_present = ("pedestrian" in det.classes or
                        "person" in det.classes or
@@ -241,7 +240,7 @@ def update_fsm(fsm: BFMCStateMachine, det: Detection,
     return "NORMAL", 1.0, fsm
 
 
-# ── Debug overlay ─────────────────────────────────────────────────────────────
+# Debug overlay
 
 STATE_COLORS = {
     State.DRIVE:            (0, 255, 0),
